@@ -10,63 +10,56 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    shell: bash -euxo pipefail {0}
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    # Check out repository under $GITHUB_WORKSPACE, so the job can access it
     - uses: actions/checkout@main
-      with:
-          fetch-depth: 0  # 确保获取完整的提交历史
+    - uses: mlugg/setup-zig@main
 
-    - name: Reset to last user commit
+    - name: Build
       run: |
-        # 找到最后一个不是由机器人提交的提交
-        LAST_USER_COMMIT=$(git log --pretty=format:'%H %an' | grep -Ev 'github-stats' | head -n1 | awk '{print $1}')
-        echo "Last user commit: $LAST_USER_COMMIT"
-        # 重置到该提交
-        git reset --hard $LAST_USER_COMMIT
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        zig build
 
-    # Run using Python 3.8 for consistency and aiohttp
-    - name: Set up Python 3.8
-      uses: actions/setup-python@main
-      with:
-        python-version: '3.8'
-        architecture: 'x64'
-        cache: 'pip'
-
-    # Install dependencies with `pip`
-    - name: Install requirements
-      run: |
-        python3 -m pip install --upgrade pip setuptools wheel
-        python3 -m pip install -r requirements.txt
-
-    # Generate all statistics images
-    - name: Generate images
-      run: |
-        python3 --version
-        python3 generate_images.py
-      env:
-        ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        EXCLUDED: ${{ secrets.EXCLUDED }}
-        EXCLUDED_LANGS: ${{ secrets.EXCLUDED_LANGS }}
-        EXCLUDE_FORKED_REPOS: true
-
-    # Commit all changed files to the repository
-    - name: Commit to the repo
+    - name: Configure git
       run: |
         git config --global user.name "jstrieb/github-stats"
         git config --global user.email "github-stats[bot]@jstrieb.github.io"
-        git add .
-        # Force the build to succeed, even if no files were changed
-        git commit -m 'Update generated files' || true
-        git push --force
 
-  # 清除老的workflow
+    - name: Generate images
+      run: |
+        ./zig-out/bin/github-stats
+      env:
+        ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+        EXCLUDE_REPOS: ${{ secrets.EXCLUDE_REPOS }}
+        EXCLUDE_LANGS: ${{ secrets.EXCLUDE_LANGS }}
+        EXCLUDE_PRIVATE: "false"
+        SILENT: "true"
+        MAX_RETRIES: 5
+
+    - name: Force push SVGs to orphan generated branch
+      run: |
+        mkdir -p /tmp/github-stats-output
+        cp overview.svg languages.svg /tmp/github-stats-output/
+
+        git switch --orphan generated-orphan
+
+        git rm -rf . || true
+        find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+
+        cp /tmp/github-stats-output/overview.svg .
+        cp /tmp/github-stats-output/languages.svg .
+
+        git add overview.svg languages.svg
+        git commit -m "Update generated SVGs"
+
+        git push --force origin generated-orphan:generated
+
   delete-workflow:
     runs-on: ubuntu-latest
     permissions:
@@ -78,5 +71,5 @@ jobs:
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
-          retain_days: 7  # 设置保留7天以内的workflow runs
-          keep_minimum_runs: 3  # 每个workflow至少保留3次运行记录
+          retain_days: 7
+          keep_minimum_runs: 3
